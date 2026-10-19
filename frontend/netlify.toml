@@ -1,0 +1,25 @@
+# Quikkred Next.js frontend — Netlify
+#
+# Site settings → Build & deploy:
+#   Base directory = frontend
+#
+# Site settings → Environment variables (required):
+#   NEXT_PUBLIC_API_URL = https://YOUR-BACKEND-URL   (not localhost, not the Netlify URL)
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NPM_FLAGS = "--no-audit --no-fund"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
