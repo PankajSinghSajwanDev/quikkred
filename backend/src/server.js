@@ -5,6 +5,7 @@ const cors = require('cors');
 const { connectDb } = require('./config/db');
 const { initSocket } = require('./socket');
 const adminRoutes = require('./routes/admin');
+const subAdminRoutes = require('./routes/subAdmins');
 const teamRoutes = require('./routes/team');
 const taskRoutes = require('./routes/tasks');
 const userRoutes = require('./routes/user');
@@ -20,6 +21,7 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+app.use('/admin/sub-admins', subAdminRoutes);
 app.use('/admin', adminRoutes);
 app.use('/admin/team', teamRoutes);
 app.use('/admin/tasks', taskRoutes);

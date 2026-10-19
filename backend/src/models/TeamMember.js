@@ -11,6 +11,16 @@ const TEAM_ROLES = [
   'business_analyst',
 ];
 
+const crudSchema = new mongoose.Schema(
+  {
+    create: { type: Boolean, default: false },
+    read: { type: Boolean, default: false },
+    update: { type: Boolean, default: false },
+    delete: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
 const teamMemberSchema = new mongoose.Schema(
   {
     name: {
@@ -39,6 +49,10 @@ const teamMemberSchema = new mongoose.Schema(
       type: String,
       required: true,
       select: false,
+    },
+    permissions: {
+      team: { type: crudSchema, default: () => ({}) },
+      tasks: { type: crudSchema, default: () => ({}) },
     },
   },
   { timestamps: true },

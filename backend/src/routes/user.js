@@ -2,10 +2,12 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { TeamMember } = require('../models/TeamMember');
-const { Task, TASK_PRIORITIES, TASK_STATUSES } = require('../models/Task');
+const { Task } = require('../models/Task');
 const { Notification } = require('../models/Notification');
 const { requireUser } = require('../middleware/userAuth');
 const { maybeNotifyAssignment } = require('../services/notify');
+const { validateTask, validateLogin, sendValidation } = require('../lib/validation');
+const { serializeUser, hasGrant } = require('../lib/rbac');
 
 const router = express.Router();
 
@@ -20,59 +22,31 @@ function signUserToken(member) {
 }
 
 function validateTaskBody(body, { partial = false } = {}) {
-  const errors = [];
-  const data = {};
+  return validateTask(body, { partial });
+}
 
-  if (!partial || body.title !== undefined) {
-    if (!body.title || !String(body.title).trim()) {
-      errors.push('Title is required');
-    } else {
-      data.title = String(body.title).trim();
+function requireGrant(resource, action) {
+  return (req, res, next) => {
+    if (!hasGrant(req.user?.permissions, resource, action)) {
+      return res.status(403).json({ message: 'Insufficient permissions' });
     }
-  }
+    next();
+  };
+}
 
-  if (!partial || body.description !== undefined) {
-    if (!body.description || !String(body.description).trim()) {
-      errors.push('Description is required');
-    } else {
-      data.description = String(body.description).trim();
-    }
-  }
+function refId(value) {
+  if (!value) return '';
+  return String(value._id || value);
+}
 
-  if (!partial || body.dueDate !== undefined) {
-    const due = new Date(body.dueDate);
-    if (!body.dueDate || Number.isNaN(due.getTime())) {
-      errors.push('Valid due date is required');
-    } else {
-      data.dueDate = due;
-    }
-  }
+function isOwnTask(task, userId) {
+  return refId(task.assignedTo) === userId || refId(task.createdBy) === userId;
+}
 
-  if (!partial || body.priority !== undefined) {
-    if (!body.priority || !TASK_PRIORITIES.includes(body.priority)) {
-      errors.push(`Priority must be one of: ${TASK_PRIORITIES.join(', ')}`);
-    } else {
-      data.priority = body.priority;
-    }
-  }
-
-  if (!partial || body.status !== undefined) {
-    if (!body.status || !TASK_STATUSES.includes(body.status)) {
-      errors.push(`Status must be one of: ${TASK_STATUSES.join(', ')}`);
-    } else {
-      data.status = body.status;
-    }
-  }
-
-  if (!partial || body.assignedTo !== undefined) {
-    if (body.assignedTo === null || body.assignedTo === '') {
-      data.assignedTo = null;
-    } else {
-      data.assignedTo = body.assignedTo;
-    }
-  }
-
-  return { errors, data };
+function canTrackTime(task, userId) {
+  const assignee = refId(task.assignedTo);
+  if (assignee) return assignee === userId;
+  return refId(task.createdBy) === userId;
 }
 
 async function populateTask(id) {
@@ -84,9 +58,8 @@ async function populateTask(id) {
 // —— Auth ——
 router.post('/login', async (req, res) => {
   const { email, password } = req.body || {};
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required' });
-  }
+  const { errors } = validateLogin(req.body || {}, { emailLogin: true });
+  if (sendValidation(res, errors)) return;
 
   const member = await TeamMember.findOne({
     email: String(email).trim().toLowerCase(),
@@ -104,13 +77,7 @@ router.post('/login', async (req, res) => {
   const token = signUserToken(member);
   res.json({
     token,
-    user: {
-      id: String(member._id),
-      name: member.name,
-      email: member.email,
-      role: member.role,
-      number: member.number,
-    },
+    user: serializeUser(member),
   });
 });
 
@@ -134,6 +101,13 @@ router.get('/dashboard', requireUser, async (req, res) => {
 
 // Team list for assign dropdown
 router.get('/team', requireUser, async (_req, res) => {
+  const members = await TeamMember.find()
+    .select('name email role number')
+    .sort({ name: 1 });
+  res.json(members);
+});
+
+router.get('/members', requireUser, requireGrant('team', 'read'), async (_req, res) => {
   const members = await TeamMember.find()
     .select('name email role number')
     .sort({ name: 1 });
@@ -168,14 +142,12 @@ router.get('/tasks/:id', requireUser, async (req, res) => {
 
 router.post('/tasks', requireUser, async (req, res) => {
   const { errors, data } = validateTaskBody(req.body || {});
-  if (errors.length) {
-    return res.status(400).json({ message: errors.join(', ') });
-  }
+  if (sendValidation(res, errors)) return;
 
   if (data.assignedTo) {
     const member = await TeamMember.findById(data.assignedTo);
     if (!member) {
-      return res.status(400).json({ message: 'Assigned team member not found' });
+      return sendValidation(res, { assignedTo: 'Assigned member not found' });
     }
   }
 
@@ -213,9 +185,7 @@ router.put('/tasks/:id', requireUser, async (req, res) => {
   }
 
   const { errors, data } = validateTaskBody(req.body || {}, { partial: true });
-  if (errors.length) {
-    return res.status(400).json({ message: errors.join(', ') });
-  }
+  if (sendValidation(res, errors)) return;
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ message: 'No fields to update' });
   }
@@ -223,7 +193,7 @@ router.put('/tasks/:id', requireUser, async (req, res) => {
   if (data.assignedTo) {
     const member = await TeamMember.findById(data.assignedTo);
     if (!member) {
-      return res.status(400).json({ message: 'Assigned team member not found' });
+      return sendValidation(res, { assignedTo: 'Assigned member not found' });
     }
   }
 
@@ -243,6 +213,55 @@ router.put('/tasks/:id', requireUser, async (req, res) => {
     });
   }
 
+  res.json(populated);
+});
+
+router.delete('/tasks/:id', requireUser, requireGrant('tasks', 'delete'), async (req, res) => {
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return res.status(404).json({ message: 'Task not found' });
+  }
+  if (!isOwnTask(task, req.user.id)) {
+    return res.status(403).json({ message: 'Not allowed to delete this task' });
+  }
+  await Task.findByIdAndDelete(task._id);
+  res.json({ message: 'Task deleted' });
+});
+
+router.post('/tasks/:id/timer', requireUser, async (req, res) => {
+  const action = String(req.body?.action || '').trim().toLowerCase();
+  if (action !== 'start' && action !== 'stop') {
+    return res.status(400).json({ message: 'Action must be start or stop' });
+  }
+
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return res.status(404).json({ message: 'Task not found' });
+  }
+  if (!canTrackTime(task, req.user.id)) {
+    return res.status(403).json({ message: 'Only the assignee can track time' });
+  }
+
+  if (action === 'start') {
+    if (task.status === 'done') {
+      return res.status(400).json({ message: 'Completed tasks cannot be timed' });
+    }
+    if (task.timerStartedAt) {
+      return res.status(400).json({ message: 'Timer is already running' });
+    }
+    task.timerStartedAt = new Date();
+    if (task.status === 'todo') task.status = 'in_progress';
+  } else {
+    if (!task.timerStartedAt) {
+      return res.status(400).json({ message: 'Timer is not running' });
+    }
+    const started = new Date(task.timerStartedAt).getTime();
+    task.timeSpentMs = (Number(task.timeSpentMs) || 0) + Math.max(0, Date.now() - started);
+    task.timerStartedAt = null;
+  }
+
+  await task.save();
+  const populated = await populateTask(task._id);
   res.json(populated);
 });
 

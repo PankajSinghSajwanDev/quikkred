@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { TeamMember } = require('../models/TeamMember');
+const { serializeUser } = require('../lib/rbac');
 
 async function requireUser(req, res, next) {
   try {
@@ -24,13 +25,7 @@ async function requireUser(req, res, next) {
       return res.status(401).json({ message: 'Invalid token' });
     }
 
-    req.user = {
-      id: String(member._id),
-      name: member.name,
-      email: member.email,
-      role: member.role,
-      number: member.number,
-    };
+    req.user = serializeUser(member);
     next();
   } catch {
     return res.status(401).json({ message: 'Invalid or expired token' });

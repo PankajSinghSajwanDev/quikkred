@@ -40,6 +40,15 @@ const taskSchema = new mongoose.Schema(
       ref: 'TeamMember',
       default: null,
     },
+    timerStartedAt: {
+      type: Date,
+      default: null,
+    },
+    timeSpentMs: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { timestamps: true },
 );

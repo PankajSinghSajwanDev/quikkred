@@ -1,77 +1,45 @@
 const express = require('express');
-const { requireAdmin } = require('../middleware/adminAuth');
+const {
+  requireAdmin,
+  requirePermission,
+  requireAnyPermission,
+} = require('../middleware/adminAuth');
 const { Task, TASK_PRIORITIES, TASK_STATUSES } = require('../models/Task');
 const { TeamMember } = require('../models/TeamMember');
 const { maybeNotifyAssignment } = require('../services/notify');
+const { validateTask, sendValidation } = require('../lib/validation');
 
 const router = express.Router();
 
 router.use(requireAdmin);
 
 function validateBody(body, { partial = false } = {}) {
-  const errors = [];
-  const data = {};
-
-  if (!partial || body.title !== undefined) {
-    if (!body.title || !String(body.title).trim()) {
-      errors.push('Title is required');
-    } else {
-      data.title = String(body.title).trim();
-    }
-  }
-
-  if (!partial || body.description !== undefined) {
-    if (!body.description || !String(body.description).trim()) {
-      errors.push('Description is required');
-    } else {
-      data.description = String(body.description).trim();
-    }
-  }
-
-  if (!partial || body.dueDate !== undefined) {
-    const due = new Date(body.dueDate);
-    if (!body.dueDate || Number.isNaN(due.getTime())) {
-      errors.push('Valid due date is required');
-    } else {
-      data.dueDate = due;
-    }
-  }
-
-  if (!partial || body.priority !== undefined) {
-    if (!body.priority || !TASK_PRIORITIES.includes(body.priority)) {
-      errors.push(`Priority must be one of: ${TASK_PRIORITIES.join(', ')}`);
-    } else {
-      data.priority = body.priority;
-    }
-  }
-
-  if (!partial || body.status !== undefined) {
-    if (!body.status || !TASK_STATUSES.includes(body.status)) {
-      errors.push(`Status must be one of: ${TASK_STATUSES.join(', ')}`);
-    } else {
-      data.status = body.status;
-    }
-  }
-
-  if (!partial || body.assignedTo !== undefined) {
-    if (body.assignedTo === null || body.assignedTo === '') {
-      data.assignedTo = null;
-    } else {
-      data.assignedTo = body.assignedTo;
-    }
-  }
-
-  return { errors, data };
+  return validateTask(body, { partial });
 }
 
-router.get('/meta', (_req, res) => {
-  res.json({
-    priorities: TASK_PRIORITIES,
-    statuses: TASK_STATUSES,
-  });
-});
+router.get(
+  '/meta',
+  requireAnyPermission([
+    ['tasks', 'read'],
+    ['tasks', 'create'],
+    ['tasks', 'update'],
+  ]),
+  (_req, res) => {
+    res.json({
+      priorities: TASK_PRIORITIES,
+      statuses: TASK_STATUSES,
+    });
+  },
+);
 
-router.get('/', async (_req, res) => {
+router.get(
+  '/',
+  requireAnyPermission([
+    ['tasks', 'read'],
+    ['tasks', 'update'],
+    ['tasks', 'delete'],
+  ]),
+  async (_req, res) => {
   const tasks = await Task.find()
     .populate('assignedTo', 'name email role number')
     .populate('createdBy', 'name email role')
@@ -79,7 +47,13 @@ router.get('/', async (_req, res) => {
   res.json(tasks);
 });
 
-router.get('/:id', async (req, res) => {
+router.get(
+  '/:id',
+  requireAnyPermission([
+    ['tasks', 'read'],
+    ['tasks', 'update'],
+  ]),
+  async (req, res) => {
   const task = await Task.findById(req.params.id)
     .populate('assignedTo', 'name email role number')
     .populate('createdBy', 'name email role');
@@ -89,16 +63,14 @@ router.get('/:id', async (req, res) => {
   res.json(task);
 });
 
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('tasks', 'create'), async (req, res) => {
   const { errors, data } = validateBody(req.body || {});
-  if (errors.length) {
-    return res.status(400).json({ message: errors.join(', ') });
-  }
+  if (sendValidation(res, errors)) return;
 
   if (data.assignedTo) {
     const member = await TeamMember.findById(data.assignedTo);
     if (!member) {
-      return res.status(400).json({ message: 'Assigned team member not found' });
+      return sendValidation(res, { assignedTo: 'Assigned member not found' });
     }
   }
 
@@ -120,16 +92,14 @@ router.post('/', async (req, res) => {
   res.status(201).json(populated);
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', requirePermission('tasks', 'update'), async (req, res) => {
   const existing = await Task.findById(req.params.id);
   if (!existing) {
     return res.status(404).json({ message: 'Task not found' });
   }
 
   const { errors, data } = validateBody(req.body || {}, { partial: true });
-  if (errors.length) {
-    return res.status(400).json({ message: errors.join(', ') });
-  }
+  if (sendValidation(res, errors)) return;
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ message: 'No fields to update' });
   }
@@ -137,7 +107,7 @@ router.put('/:id', async (req, res) => {
   if (data.assignedTo) {
     const member = await TeamMember.findById(data.assignedTo);
     if (!member) {
-      return res.status(400).json({ message: 'Assigned team member not found' });
+      return sendValidation(res, { assignedTo: 'Assigned member not found' });
     }
   }
 
@@ -164,7 +134,7 @@ router.put('/:id', async (req, res) => {
   res.json(task);
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('tasks', 'delete'), async (req, res) => {
   const task = await Task.findByIdAndDelete(req.params.id);
   if (!task) {
     return res.status(404).json({ message: 'Task not found' });
