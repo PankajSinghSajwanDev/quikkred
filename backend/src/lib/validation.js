@@ -103,6 +103,33 @@ function description(value) {
   return null;
 }
 
+function updateMessage(value) {
+  const v = trim(value);
+  if (!v) return 'Update message is required';
+  if (v.length < 5) return 'Write at least 5 characters';
+  if (v.length > 2000) return 'Update must be at most 2000 characters';
+  return null;
+}
+
+function validateTaskUpdate(body) {
+  const errors = {};
+  const data = {};
+  const err = updateMessage(body?.message);
+  if (err) errors.message = err;
+  else data.message = trim(body.message);
+
+  if (body?.etaMinutes !== undefined && body?.etaMinutes !== null && body?.etaMinutes !== '') {
+    const n = Number(body.etaMinutes);
+    if (!Number.isFinite(n) || n < 1 || n > 90 * 24 * 60) {
+      errors.etaMinutes = 'Enter a valid estimate (1 minute to 90 days)';
+    } else {
+      data.etaMinutes = Math.round(n);
+    }
+  }
+
+  return { errors: compactErrors(errors), data };
+}
+
 function dueDate(value) {
   if (!value) return 'Due date is required';
   const d = new Date(value);
@@ -274,6 +301,8 @@ module.exports = {
   objectId,
   validateMember,
   validateTask,
+  validateTaskUpdate,
   validateUsernamePassword,
   validateLogin,
+  updateMessage,
 };

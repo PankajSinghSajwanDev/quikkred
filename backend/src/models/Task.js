@@ -49,6 +49,11 @@ const taskSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    etaMinutes: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   { timestamps: true },
 );

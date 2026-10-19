@@ -6,6 +6,7 @@ const ACTIONS = [
   'task_create',
   'task_update',
   'task_delete',
+  'task_note',
 ];
 
 const activityLogSchema = new mongoose.Schema(

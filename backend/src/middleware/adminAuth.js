@@ -5,7 +5,6 @@ const {
   hasPermission,
   serializeAdmin,
   serializeMemberStaff,
-  isSuperAdmin,
   countGranted,
 } = require('../lib/rbac');
 
@@ -50,15 +49,6 @@ async function requireAdmin(req, res, next) {
   }
 }
 
-function requireSuperAdmin(req, res, next) {
-  if (!isSuperAdmin(req.admin)) {
-    return res.status(403).json({
-      message: 'Only the admin can manage sub-admins',
-    });
-  }
-  next();
-}
-
 function requirePermission(resource, action) {
   return (req, res, next) => {
     if (!hasPermission(req.admin, resource, action)) {
@@ -84,7 +74,6 @@ function requireAnyPermission(checks) {
 
 module.exports = {
   requireAdmin,
-  requireSuperAdmin,
   requirePermission,
   requireAnyPermission,
 };

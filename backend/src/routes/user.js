@@ -6,10 +6,18 @@ const { Task } = require('../models/Task');
 const { Notification } = require('../models/Notification');
 const { requireUser } = require('../middleware/userAuth');
 const { maybeNotifyAssignment } = require('../services/notify');
-const { validateTask, validateLogin, sendValidation } = require('../lib/validation');
-const { serializeUser, hasGrant } = require('../lib/rbac');
+const { validateTask, validateTaskUpdate, validateLogin, sendValidation } = require('../lib/validation');
+const { serializeUser, hasGrant, memberCan, memberSeesAllTasks } = require('../lib/rbac');
+const { writeLog, memberActor } = require('../services/activityLog');
+const { authLimiter } = require('../middleware/rateLimit');
+const {
+  listTaskUpdates,
+  addTaskUpdate,
+  deleteUpdatesForTask,
+} = require('../services/taskUpdates');
 
 const router = express.Router();
+const DUMMY_HASH = bcrypt.hashSync('__invalid_login__', 10);
 
 function signUserToken(member) {
   const secret = process.env.JWT_SECRET;
@@ -43,10 +51,18 @@ function isOwnTask(task, userId) {
   return refId(task.assignedTo) === userId || refId(task.createdBy) === userId;
 }
 
-function canTrackTime(task, userId) {
-  const assignee = refId(task.assignedTo);
-  if (assignee) return assignee === userId;
-  return refId(task.createdBy) === userId;
+function canTrackTime(task, user) {
+  const userId = user?.id;
+  if (!userId) return false;
+  // Assignee, creator, or members with tasks.update can track time.
+  if (refId(task.assignedTo) === userId || refId(task.createdBy) === userId) {
+    return true;
+  }
+  return memberCan(user.permissions, 'tasks', 'update');
+}
+
+function canPostTaskUpdate(task, user) {
+  return isOwnTask(task, user.id) || memberCan(user.permissions, 'tasks', 'update');
 }
 
 async function populateTask(id) {
@@ -56,7 +72,7 @@ async function populateTask(id) {
 }
 
 // —— Auth ——
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   const { errors } = validateLogin(req.body || {}, { emailLogin: true });
   if (sendValidation(res, errors)) return;
@@ -66,6 +82,7 @@ router.post('/login', async (req, res) => {
   }).select('+password');
 
   if (!member || !member.password) {
+    await bcrypt.compare(String(password || ''), DUMMY_HASH);
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
@@ -117,9 +134,10 @@ router.get('/members', requireUser, requireGrant('team', 'read'), async (_req, r
 // —— Tasks ——
 router.get('/tasks', requireUser, async (req, res) => {
   const userId = req.user.id;
-  const tasks = await Task.find({
-    $or: [{ assignedTo: userId }, { createdBy: userId }],
-  })
+  const filter = memberSeesAllTasks(req.user.permissions)
+    ? {}
+    : { $or: [{ assignedTo: userId }, { createdBy: userId }] };
+  const tasks = await Task.find(filter)
     .populate('assignedTo', 'name email role number')
     .populate('createdBy', 'name email role')
     .sort({ dueDate: 1 });
@@ -131,16 +149,52 @@ router.get('/tasks/:id', requireUser, async (req, res) => {
   if (!task) {
     return res.status(404).json({ message: 'Task not found' });
   }
-  const userId = req.user.id;
-  const assignee = task.assignedTo ? String(task.assignedTo._id || task.assignedTo) : '';
-  const creator = task.createdBy ? String(task.createdBy._id || task.createdBy) : '';
-  if (assignee !== userId && creator !== userId) {
+  if (!memberSeesAllTasks(req.user.permissions) && !isOwnTask(task, req.user.id)) {
     return res.status(403).json({ message: 'Not allowed to view this task' });
   }
   res.json(task);
 });
 
+router.get('/tasks/:id/updates', requireUser, async (req, res) => {
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return res.status(404).json({ message: 'Task not found' });
+  }
+  if (!memberSeesAllTasks(req.user.permissions) && !isOwnTask(task, req.user.id)) {
+    return res.status(403).json({ message: 'Not allowed to view this task' });
+  }
+  res.json(await listTaskUpdates(task._id));
+});
+
+router.post('/tasks/:id/updates', requireUser, async (req, res) => {
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return res.status(404).json({ message: 'Task not found' });
+  }
+  if (!memberSeesAllTasks(req.user.permissions) && !isOwnTask(task, req.user.id)) {
+    return res.status(403).json({ message: 'Not allowed to view this task' });
+  }
+  if (!canPostTaskUpdate(task, req.user)) {
+    return res.status(403).json({ message: 'Not allowed to post an update' });
+  }
+
+  const { errors, data } = validateTaskUpdate(req.body || {});
+  if (sendValidation(res, errors)) return;
+
+  const update = await addTaskUpdate({
+    task,
+    actor: memberActor(req.user),
+    message: data.message,
+    etaMinutes: data.etaMinutes,
+  });
+  const populated = await populateTask(task._id);
+  res.status(201).json({ update, task: populated });
+});
+
 router.post('/tasks', requireUser, async (req, res) => {
+  if (!memberCan(req.user.permissions, 'tasks', 'create')) {
+    return res.status(403).json({ message: 'Insufficient permissions' });
+  }
   const { errors, data } = validateTaskBody(req.body || {});
   if (sendValidation(res, errors)) return;
 
@@ -168,6 +222,14 @@ router.post('/tasks', requireUser, async (req, res) => {
     skipUserId: req.user.id,
   });
 
+  await writeLog({
+    ...memberActor(req.user),
+    action: 'task_create',
+    task: task._id,
+    taskTitle: populated.title,
+    message: `${req.user.name} created task “${populated.title}”`,
+  });
+
   res.status(201).json(populated);
 });
 
@@ -177,11 +239,22 @@ router.put('/tasks/:id', requireUser, async (req, res) => {
     return res.status(404).json({ message: 'Task not found' });
   }
 
-  const userId = req.user.id;
-  const assignee = existing.assignedTo ? String(existing.assignedTo) : '';
-  const creator = existing.createdBy ? String(existing.createdBy) : '';
-  if (assignee !== userId && creator !== userId) {
+  const canEdit =
+    memberCan(req.user.permissions, 'tasks', 'update') ||
+    isOwnTask(existing, req.user.id);
+  if (!canEdit) {
     return res.status(403).json({ message: 'Not allowed to update this task' });
+  }
+
+  // Staff without update grant may only change status on their own tasks.
+  if (
+    !memberCan(req.user.permissions, 'tasks', 'update') &&
+    isOwnTask(existing, req.user.id)
+  ) {
+    const allowed = Object.keys(req.body || {}).every((key) => key === 'status');
+    if (!allowed) {
+      return res.status(403).json({ message: 'Not allowed to update this task' });
+    }
   }
 
   const { errors, data } = validateTaskBody(req.body || {}, { partial: true });
@@ -213,6 +286,14 @@ router.put('/tasks/:id', requireUser, async (req, res) => {
     });
   }
 
+  await writeLog({
+    ...memberActor(req.user),
+    action: 'task_update',
+    task: existing._id,
+    taskTitle: populated.title,
+    message: `${req.user.name} updated task “${populated.title}”`,
+  });
+
   res.json(populated);
 });
 
@@ -221,10 +302,16 @@ router.delete('/tasks/:id', requireUser, requireGrant('tasks', 'delete'), async 
   if (!task) {
     return res.status(404).json({ message: 'Task not found' });
   }
-  if (!isOwnTask(task, req.user.id)) {
-    return res.status(403).json({ message: 'Not allowed to delete this task' });
-  }
+  const title = task.title;
+  await deleteUpdatesForTask(task._id);
   await Task.findByIdAndDelete(task._id);
+  await writeLog({
+    ...memberActor(req.user),
+    action: 'task_delete',
+    task: task._id,
+    taskTitle: title,
+    message: `${req.user.name} deleted task “${title}”`,
+  });
   res.json({ message: 'Task deleted' });
 });
 
@@ -238,30 +325,43 @@ router.post('/tasks/:id/timer', requireUser, async (req, res) => {
   if (!task) {
     return res.status(404).json({ message: 'Task not found' });
   }
-  if (!canTrackTime(task, req.user.id)) {
-    return res.status(403).json({ message: 'Only the assignee can track time' });
+  if (!canTrackTime(task, req.user)) {
+    return res.status(403).json({ message: 'Not allowed to track time on this task' });
   }
 
   if (action === 'start') {
-    if (task.status === 'done') {
-      return res.status(400).json({ message: 'Completed tasks cannot be timed' });
-    }
     if (task.timerStartedAt) {
       return res.status(400).json({ message: 'Timer is already running' });
     }
     task.timerStartedAt = new Date();
-    if (task.status === 'todo') task.status = 'in_progress';
+    if (task.status === 'todo' || task.status === 'done') {
+      task.status = 'in_progress';
+    }
   } else {
     if (!task.timerStartedAt) {
       return res.status(400).json({ message: 'Timer is not running' });
     }
     const started = new Date(task.timerStartedAt).getTime();
-    task.timeSpentMs = (Number(task.timeSpentMs) || 0) + Math.max(0, Date.now() - started);
+    const durationMs = Math.max(0, Date.now() - started);
+    task.timeSpentMs = (Number(task.timeSpentMs) || 0) + durationMs;
     task.timerStartedAt = null;
+    req._timerDurationMs = durationMs;
   }
 
   await task.save();
   const populated = await populateTask(task._id);
+  const durationMs = Number(req._timerDurationMs) || 0;
+  await writeLog({
+    ...memberActor(req.user),
+    action: action === 'start' ? 'timer_start' : 'timer_stop',
+    task: task._id,
+    taskTitle: populated.title,
+    message:
+      action === 'start'
+        ? `${req.user.name} started time on “${populated.title}”`
+        : `${req.user.name} stopped time on “${populated.title}”`,
+    meta: action === 'stop' ? { durationMs } : {},
+  });
   res.json(populated);
 });
 

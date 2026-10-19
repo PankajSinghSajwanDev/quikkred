@@ -14,8 +14,10 @@ const {
   validateLogin,
   sendValidation,
 } = require('../lib/validation');
+const { authLimiter } = require('../middleware/rateLimit');
 
 const router = express.Router();
+const DUMMY_HASH = bcrypt.hashSync('__invalid_login__', 10);
 
 function jwtSecret() {
   const secret = process.env.JWT_SECRET;
@@ -51,7 +53,7 @@ router.get('/status', async (_req, res) => {
 });
 
 // Create the one-and-only super admin (blocked if already created)
-router.post('/setup', async (req, res) => {
+router.post('/setup', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   const { errors } = validateUsernamePassword(req.body || {}, { passwordMin: 8 });
   if (sendValidation(res, errors)) return;
@@ -81,7 +83,7 @@ router.post('/setup', async (req, res) => {
 });
 
 // Admin / sub-admin login
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   const { errors } = validateLogin(req.body || {});
   if (sendValidation(res, errors)) return;
@@ -105,6 +107,7 @@ router.post('/login', async (req, res) => {
 
   const member = await TeamMember.findOne({ email: loginId }).select('+password');
   if (!member || countGranted(member.permissions) === 0) {
+    await bcrypt.compare(String(password), DUMMY_HASH);
     return res.status(401).json({ message: 'Invalid username or password' });
   }
   const ok = await bcrypt.compare(String(password), member.password);

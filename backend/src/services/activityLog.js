@@ -17,4 +17,13 @@ function memberActor(user) {
   };
 }
 
-module.exports = { writeLog, memberActor };
+function adminActor(admin) {
+  return {
+    actorType: 'admin',
+    actorId: String(admin.id),
+    actorName: admin.name || admin.username || 'Admin',
+    actorEmail: admin.email || admin.username || '',
+  };
+}
+
+module.exports = { writeLog, memberActor, adminActor };

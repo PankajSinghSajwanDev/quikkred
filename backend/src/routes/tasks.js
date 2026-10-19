@@ -7,7 +7,13 @@ const {
 const { Task, TASK_PRIORITIES, TASK_STATUSES } = require('../models/Task');
 const { TeamMember } = require('../models/TeamMember');
 const { maybeNotifyAssignment } = require('../services/notify');
-const { validateTask, sendValidation } = require('../lib/validation');
+const { validateTask, validateTaskUpdate, sendValidation } = require('../lib/validation');
+const { adminActor } = require('../services/activityLog');
+const {
+  listTaskUpdates,
+  addTaskUpdate,
+  deleteUpdatesForTask,
+} = require('../services/taskUpdates');
 
 const router = express.Router();
 
@@ -52,6 +58,7 @@ router.get(
   requireAnyPermission([
     ['tasks', 'read'],
     ['tasks', 'update'],
+    ['tasks', 'delete'],
   ]),
   async (req, res) => {
   const task = await Task.findById(req.params.id)
@@ -62,6 +69,50 @@ router.get(
   }
   res.json(task);
 });
+
+router.get(
+  '/:id/updates',
+  requireAnyPermission([
+    ['tasks', 'read'],
+    ['tasks', 'update'],
+    ['tasks', 'delete'],
+  ]),
+  async (req, res) => {
+    const task = await Task.findById(req.params.id);
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    res.json(await listTaskUpdates(task._id));
+  },
+);
+
+router.post(
+  '/:id/updates',
+  requireAnyPermission([
+    ['tasks', 'read'],
+    ['tasks', 'update'],
+    ['tasks', 'delete'],
+  ]),
+  async (req, res) => {
+    const task = await Task.findById(req.params.id);
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    const { errors, data } = validateTaskUpdate(req.body || {});
+    if (sendValidation(res, errors)) return;
+
+    const update = await addTaskUpdate({
+      task,
+      actor: adminActor(req.admin),
+      message: data.message,
+      etaMinutes: data.etaMinutes,
+    });
+    const populated = await Task.findById(task._id)
+      .populate('assignedTo', 'name email role number')
+      .populate('createdBy', 'name email role');
+    res.status(201).json({ update, task: populated });
+  },
+);
 
 router.post('/', requirePermission('tasks', 'create'), async (req, res) => {
   const { errors, data } = validateBody(req.body || {});
@@ -139,6 +190,7 @@ router.delete('/:id', requirePermission('tasks', 'delete'), async (req, res) => 
   if (!task) {
     return res.status(404).json({ message: 'Task not found' });
   }
+  await deleteUpdatesForTask(task._id);
   res.json({ message: 'Task deleted' });
 });
 

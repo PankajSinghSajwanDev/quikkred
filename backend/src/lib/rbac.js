@@ -120,13 +120,13 @@ function hasAnyResourceGrant(permissions, resource) {
 
 /**
  * Member portal access. If the member has any grant on a resource, only those
- * grants apply. Members with no task grants keep default self-service
- * (create / read / update their own work, no delete).
+ * grants apply. Members with no task grants can only read/update their own
+ * work — create/delete require an explicit admin grant.
  */
 function memberCan(permissions, resource, action) {
   const staff = hasAnyResourceGrant(permissions, resource);
   if (!staff) {
-    return resource === 'tasks' && (action === 'create' || action === 'read' || action === 'update');
+    return resource === 'tasks' && (action === 'read' || action === 'update');
   }
   return hasGrant(permissions, resource, action);
 }
