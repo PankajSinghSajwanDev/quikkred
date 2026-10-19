@@ -4,7 +4,7 @@
 #   Base directory = frontend
 #
 # Site settings → Environment variables (required):
-#   NEXT_PUBLIC_API_URL = https://YOUR-BACKEND-URL   (not localhost, not the Netlify URL)
+#   NEXT_PUBLIC_API_URL = https://quikkred.onrender.com   (not localhost, not the Netlify URL)
 
 [build]
   command = "npm run build"
