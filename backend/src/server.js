@@ -15,7 +15,17 @@ const logRoutes = require('./routes/logs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
+
+/** Comma-separated list, e.g. http://localhost:3000,https://quikkred.netlify.app */
+function parseCorsOrigins(value) {
+  const list = String(value || 'http://localhost:3000')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list.length === 1 ? list[0] : list;
+}
+
+const CORS_ORIGINS = parseCorsOrigins(process.env.CORS_ORIGIN);
 
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY === '1') {
@@ -23,7 +33,7 @@ if (process.env.TRUST_PROXY === '1') {
 }
 
 app.use(securityHeaders);
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
+app.use(cors({ origin: CORS_ORIGINS, credentials: true }));
 app.use(express.json({ limit: '64kb' }));
 app.use(globalLimiter);
 app.use(singleFlight);
@@ -38,6 +48,7 @@ app.use('/admin/tasks', taskRoutes);
 app.use('/admin/logs', logRoutes);
 app.use('/user', userRoutes);
 
+app.use(jsonErrorHandler);
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ message: err.message || 'Internal server error' });
@@ -46,7 +57,7 @@ app.use((err, _req, res, _next) => {
 async function start() {
   await connectDb();
   const server = http.createServer(app);
-  initSocket(server, CORS_ORIGIN);
+  initSocket(server, CORS_ORIGINS);
   server.listen(PORT, () => {
     console.log(`API listening on http://localhost:${PORT}`);
   });
